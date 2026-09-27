@@ -1,0 +1,51 @@
+{
+  "name": "cloudflare-worker-kvdb",
+  "version": "0.1.0",
+  "description": "High-performance, developer-friendly, production-grade KV Database SDK designed for Cloudflare Workers, Pages, and Durable Objects.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "lru-cache": "^11.0.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250224.0",
+    "@types/node": "^22.13.5",
+    "tsup": "^8.3.6",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.7"
+  },
+  "keywords": [
+    "cloudflare",
+    "cloudflare-workers",
+    "d1",
+    "kv",
+    "r2",
+    "durable-objects",
+    "database",
+    "key-value",
+    "sqlite",
+    "typescript"
+  ]
+}

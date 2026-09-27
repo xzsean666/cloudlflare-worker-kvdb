@@ -1,0 +1,11 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "cloudflare-worker-kvdb": ["../src/index.ts"]
+    },
+    "noEmit": true
+  },
+  "include": ["**/*.ts"]
+}
