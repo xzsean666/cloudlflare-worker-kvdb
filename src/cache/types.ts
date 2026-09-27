@@ -25,7 +25,11 @@ export interface L2KVOptions {
 }
 
 export interface TieredCacheOptions {
-  l1?: L1MemoryOptions;
+  /**
+   * Configuration for in-isolate L1 LRU memory cache.
+   * Set to `false` to disable L1 memory cache and rely solely on globally distributed L2 Workers KV.
+   */
+  l1?: L1MemoryOptions | false;
   l2?: L2KVOptions;
   ctx?: ExecutionContext;
 }

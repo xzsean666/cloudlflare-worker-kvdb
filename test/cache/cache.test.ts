@@ -28,17 +28,17 @@ describe("Multi-Tier Caching System", () => {
     await cache.set("user:123", { name: "Bob", role: "author" });
 
     // Verify written to both L1 and L2
-    expect(await cache.l1.has("user:123")).toBe(true);
+    expect(await cache.l1!.has("user:123")).toBe(true);
     expect(await cache.l2!.has("user:123")).toBe(true);
 
     // Clear L1 memory to simulate isolate restart
-    await cache.l1.clear();
-    expect(await cache.l1.has("user:123")).toBe(false);
+    await cache.l1!.clear();
+    expect(await cache.l1!.has("user:123")).toBe(false);
 
     // Get should hit L2 and repopulate L1
     const retrieved = await cache.get<{ name: string; role: string }>("user:123");
     expect(retrieved).toEqual({ name: "Bob", role: "author" });
-    expect(await cache.l1.has("user:123")).toBe(true);
+    expect(await cache.l1!.has("user:123")).toBe(true);
   });
 
   it("handles Stale-While-Revalidate (SWR) transparently", async () => {
@@ -102,7 +102,7 @@ describe("Multi-Tier Caching System", () => {
 
     expect(await cache.has("itemA")).toBe(false);
     expect(await cache.has("itemB")).toBe(false);
-    expect(await cache.l1.has("itemA")).toBe(false);
+    expect(await cache.l1!.has("itemA")).toBe(false);
     expect(await cache.l2!.has("itemA")).toBe(false);
   });
 });

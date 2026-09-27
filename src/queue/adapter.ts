@@ -8,7 +8,7 @@ export interface QueueSqlStatement {
 export interface QueueSqlAdapter {
   exec(sql: string, ...params: unknown[]): Promise<{ changes: number }>;
   query<T = Record<string, unknown>>(sql: string, ...params: unknown[]): Promise<T[]>;
-  batch(statements: QueueSqlStatement[]): Promise<void>;
+  batch(statements: QueueSqlStatement[]): Promise<{ changes: number }[]>;
 }
 
 function coerceParams(params: unknown[]): unknown[] {
@@ -40,12 +40,13 @@ export function createQueueSqlAdapter(db: D1Database | SqlStorage): QueueSqlAdap
         const res = await stmt.all<T>();
         return res.results ?? [];
       },
-      async batch(statements: QueueSqlStatement[]): Promise<void> {
-        if (statements.length === 0) return;
+      async batch(statements: QueueSqlStatement[]): Promise<{ changes: number }[]> {
+        if (statements.length === 0) return [];
         const stmts = statements.map((s) =>
           d1.prepare(s.sql).bind(...coerceParams(s.params ?? []))
         );
-        await d1.batch(stmts);
+        const results = await d1.batch(stmts);
+        return results.map((r) => ({ changes: r.meta?.changes ?? 0 }));
       },
     };
   }
@@ -62,14 +63,17 @@ export function createQueueSqlAdapter(db: D1Database | SqlStorage): QueueSqlAdap
         const cursor = sqlStorage.exec<T & Record<string, any>>(sql, ...coerceParams(params));
         return cursor.toArray();
       },
-      async batch(statements: QueueSqlStatement[]): Promise<void> {
-        if (statements.length === 0) return;
+      async batch(statements: QueueSqlStatement[]): Promise<{ changes: number }[]> {
+        if (statements.length === 0) return [];
+        const results: { changes: number }[] = [];
         sqlStorage.exec("BEGIN;");
         try {
           for (const s of statements) {
-            sqlStorage.exec(s.sql, ...coerceParams(s.params ?? []));
+            const cursor = sqlStorage.exec(s.sql, ...coerceParams(s.params ?? []));
+            results.push({ changes: cursor.rowsWritten ?? 0 });
           }
           sqlStorage.exec("COMMIT;");
+          return results;
         } catch (err) {
           try {
             sqlStorage.exec("ROLLBACK;");

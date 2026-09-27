@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Runtime](https://img.shields.io/badge/Runtime-Cloudflare%20workerd-orange.svg)](#)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Strict-blue.svg)](#)
-[![Tests](https://img.shields.io/badge/Tests-135%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/Tests-164%20passing-brightgreen.svg)](#)
 [![Bundle](https://img.shields.io/badge/Bundle-ESM%20%2B%20CJS%20%2B%20DTS-purple.svg)](#)
 
 ---
@@ -28,11 +28,11 @@ Building production-grade data storage on Cloudflare primitives (D1, Workers KV,
 
 | Pillar | Optimization | Impact |
 | :--- | :--- | :--- |
-| **1. Atomic `db.batch()` Bundling** | Aggregates multi-row mutations into single SQLite batch transactions | **85%-90% reduction** in write latency and eliminates lock contention |
+| **1. Atomic `db.batch()` & Auto-Batching** | Micro-batch write buffer coalescing discrete `table.set()` calls into atomic `db.batch()` | **85%-90% reduction** in write latency and eliminates lock contention |
 | **2. 100-Parameter Guard** | Dynamically chunks multi-item operations into 80-parameter safe statements | **100% immune** to `too many SQL variables` crashes |
 | **3. Read-Your-Own-Writes (RYW)** | Native D1 Sessions API integration with bookmark propagation | Guaranteed sequential consistency across global edge replicas |
 | **4. Monotonic Clocks** | High-precision monotonically increasing millisecond clock | Strict total ordering and tie-breaking for concurrent writes |
-| **5. Keyset Cursor Pagination** | Composite B-Tree seek queries `(created_at, id)` | O(1) page access with **zero wasted rows-read charges** (No `OFFSET`) |
+| **5. Keyset Cursor Pagination (`findPage`)** | Composite B-Tree seek queries `(created_at, id)` returning `{ items, cursor, complete }` | O(1) page access with **zero wasted rows-read charges** (No `OFFSET`) |
 | **6. Multi-Tier Caching** | L1 Isolate Memory (<0.05ms) -> L2 Workers KV (5-15ms) -> L3 D1 | Sub-millisecond reads and massive D1 cost savings |
 | **7. R2 Blob Overflow Engine** | Transparently offloads payloads > 64KB to Cloudflare R2 | Unlimited document sizes with transparent retrieval and deletion |
 
@@ -118,7 +118,34 @@ export default {
 
 ---
 
-### 2. Physical Schemas, Secondary Indexes, and MongoDB Query Filtering
+### 2. High-Frequency Writes with Micro-Batch Auto-Batching
+
+Eliminate SQLite write lock contention by coalescing concurrent discrete writes into atomic batches:
+
+```ts
+const db = new CloudflareKVDB({
+  d1: env.DB,
+  ctx, // Automatically registers background flushes with ctx.waitUntil()
+  autoBatch: {
+    maxBatchSize: 50,  // Flushes immediately when 50 writes accumulate
+    maxWaitMs: 10,     // Or flushes within 10ms of idle
+  },
+});
+
+const metrics = db.table("metrics");
+
+// High-frequency calls across concurrent requests in the isolate:
+// Automatically debounced and committed in a single atomic db.batch()!
+await Promise.all([
+  metrics.set("req:1", { path: "/api", status: 200 }),
+  metrics.set("req:2", { path: "/auth", status: 201 }),
+  metrics.set("req:3", { path: "/data", status: 200 }),
+]);
+```
+
+---
+
+### 3. Physical Schemas, Secondary Indexes, and Keyset Cursor Pagination (`findPage`)
 
 ```ts
 const users = db.table<UserProfile>("users", {
@@ -150,11 +177,15 @@ const topPlayers = await users.find(
     sort: [{ field: "score", order: "desc" }],
   }
 );
+
+// Turnkey Keyset Cursor Pagination
+const page1 = await users.findPage({ team: "infra" }, { limit: 20 });
+console.log(page1.items, page1.cursor, page1.complete);
 ```
 
 ---
 
-### 3. Serverless Reliable Job Queue on Durable Objects or D1
+### 4. Serverless Reliable Job Queue on Durable Objects or D1
 
 ```ts
 import { JobQueue, QueueWorker, QueueReaper } from "cloudflare-worker-kvdb";
@@ -191,7 +222,7 @@ await reaper.reap();
 
 ---
 
-### 4. Declarative Method Caching Decorators
+### 5. Declarative Method Caching Decorators
 
 ```ts
 import { Cacheable, CacheClear, TieredCache } from "cloudflare-worker-kvdb";
@@ -219,7 +250,7 @@ class UserService {
 
 ---
 
-### 5. Scheduled Cron Sweeper for Expired Records and Orphaned Blobs
+### 6. Scheduled Cron Sweeper for Expired Records and Orphaned Blobs
 
 ```ts
 import { createScheduledHandler } from "cloudflare-worker-kvdb";

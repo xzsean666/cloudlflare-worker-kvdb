@@ -33,13 +33,23 @@
   - **SingleFlight Cache Protection**: Eliminated cache stampede / thundering herd via in-flight promise memoization in `TieredCache`.
   - **Query Engine Expansion**: Added native `$like` pattern matching operator to AST compiler.
   - **Dual-Mode Decorators**: Supported both TC39 Stage 3 and legacy TypeScript `experimentalDecorators` in `@Cacheable` and `@CacheClear`.
+  - **Comprehensive Audit Fixes & Data Safety Hardening**:
+    - **Safe Deferred R2 Blob Deletion**: Fixed critical ordering flaw in `Table.delete` and `Table.deleteMany`. R2 blobs are now deleted ONLY AFTER the database transaction successfully succeeds, eliminating corrupted dangling pointers if DB execution errors.
+    - **D1 Session Bookmark Propagation Parity**: Propagated `meta.bookmark` across all `Table` write methods (`set`, `setMany`, `delete`, `deleteMany`) and `D1Driver.delete/deleteMany`. Added `db.getSessionBookmark()` alias matching official docs.
+    - **Cloudflare Workers KV Sub-60s Compliance**: Clamped KV `expirationTtl` to >= 60s in `KVDriver` and `KVCacheStore` while recording exact millisecond TTL in entry metadata. Eliminates Cloudflare Workers KV API runtime crashes while preserving precise sub-minute expirations.
+    - **Orphan Blob Sweeping & Eager Replacement**: Added `sweepOrphanBlobs()` to `TTLSweeper` for Mark-and-Sweep reclamation of unreferenced R2 blobs, and added `cleanOrphanBlobsOnUpdate` to `TableOptions` for eager blob replacement.
+    - **Global Cache Coherence**: Supported `l1: false` in `TieredCache` to allow developers to bypass in-isolate memory when strict multi-isolate global consistency is needed.
+    - **Micro-Batch Write Buffer (`autoBatch`)**: Implemented `WriteBatcher<V>` in `Table` and `CloudflareKVDB` to automatically aggregate discrete concurrent `table.set()` calls into atomic `db.batch()` operations, dramatically mitigating D1 write-lock contention under high-frequency writes. In-isolate Read-Your-Own-Writes is strictly preserved via automatic pre-read flushes, and background flushes are guarded via `ctx.waitUntil()`.
+    - **Index-Only `Table.has()` Probing**: Replaced full payload `get()` in schema tables with `SELECT 1 FROM table WHERE pk = ? AND (expires_at IS NULL OR expires_at > ?) LIMIT 1;`. Completely eliminates network egress to R2 for large overflow blobs and reduces SQLite I/O to a point index seek.
+    - **Turnkey Keyset Cursor Pagination (`Table.findPage`)**: Implemented `findPage(where, queryOptions)` returning `{ items, cursor, complete }`, leveraging SQL B-Tree seek predicates `(pk > ?)` without expensive `OFFSET` table scans.
+    - **Atomic Batch Queue Acknowledgment (`JobQueue.ackMany`)**: Added `ackMany()` to batch job completions or deletions into a single `db.batch()` call, eliminating N+1 roundtrips when draining queue job batches in workers.
 
 ---
 
 ## 2. Verification Commands Run & Results
 ```bash
 pnpm test
-# 20 test files, 148/148 tests passed in 3.18s
+# 21 test files, 164/164 tests passed in 3.21s
 
 pnpm typecheck
 # 0 errors (strict TypeScript)
@@ -48,13 +58,13 @@ pnpm exec tsc --project examples/tsconfig.json --noEmit
 # 0 errors across all 3 production examples
 
 pnpm build
-# Dual ESM (dist/index.js, 125 KB) + CJS (dist/index.cjs, 129 KB) + DTS (dist/index.d.ts, 43 KB)
+# Dual ESM (dist/index.js, 139 KB) + CJS (dist/index.cjs, 143 KB) + DTS (dist/index.d.ts, 47 KB)
 ```
 
 ---
 
 ## 3. Unresolved Issues & Known Gaps
-- None. All acceptance criteria met across all 16 tasks.
+- None. All audit findings and optimization goals resolved and verified with 164 automated tests.
 
 ---
 

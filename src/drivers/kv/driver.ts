@@ -48,7 +48,12 @@ export class KVDriver implements Driver {
   async get(namespace: string, key: string): Promise<string | null> {
     try {
       const storageKey = this.toStorageKey(namespace, key);
-      return await this.kv.get(storageKey);
+      const res = await this.kv.getWithMetadata<{ expiresAt?: number }>(storageKey);
+      if (res.value === null || res.value === undefined) return null;
+      if (res.metadata?.expiresAt && Date.now() > res.metadata.expiresAt) {
+        return null;
+      }
+      return res.value;
     } catch (err: any) {
       throw new StorageError(`Workers KV get failed for key '${key}': ${err.message}`, err);
     }
@@ -82,12 +87,13 @@ export class KVDriver implements Driver {
       const putOptions: KVNamespacePutOptions = {};
 
       if (ttlSeconds !== undefined && ttlSeconds > 0) {
-        // Workers KV requires expirationTtl to be >= 60 seconds
-        if (ttlSeconds >= 60) {
-          putOptions.expirationTtl = Math.floor(ttlSeconds);
-        } else {
-          putOptions.expiration = Math.floor(Date.now() / 1000) + Math.floor(ttlSeconds);
-        }
+        // Cloudflare Workers KV requires expirationTtl to be >= 60 seconds.
+        // We set expirationTtl to at least 60 seconds to satisfy the KV API,
+        // and record the precise application-level expiration in metadata.
+        putOptions.expirationTtl = Math.max(60, Math.ceil(ttlSeconds));
+        putOptions.metadata = {
+          expiresAt: Date.now() + Math.ceil(ttlSeconds * 1000),
+        };
       }
 
       await this.kv.put(storageKey, value, putOptions);
@@ -171,7 +177,14 @@ export class KVDriver implements Driver {
         cursor: options?.cursor,
       });
 
-      const keys = res.keys.map((k) => this.fromStorageKey(namespace, k.name));
+      const activeKeys = res.keys.filter((k) => {
+        const meta = k.metadata as { expiresAt?: number } | undefined;
+        if (meta?.expiresAt && Date.now() > meta.expiresAt) {
+          return false;
+        }
+        return true;
+      });
+      const keys = activeKeys.map((k) => this.fromStorageKey(namespace, k.name));
       return {
         keys,
         cursor: res.list_complete ? undefined : res.cursor,

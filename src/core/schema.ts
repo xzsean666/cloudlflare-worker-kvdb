@@ -28,7 +28,7 @@ export interface TableIndexDefinition {
 
 export interface TableSchema {
   primaryKey?: PrimaryKeyDefinition;
-  columns: Record<string, KeyDefinition>;
+  columns?: Record<string, KeyDefinition>;
   indexes?: TableIndexDefinition[];
   tableName?: string;
   version?: number;
@@ -63,7 +63,7 @@ export function normalizeTableSchema(schema: TableSchema): NormalizedSchema {
   }
 
   const columns: Record<string, KeyDefinition> = {};
-  for (const [colName, colDef] of Object.entries(schema.columns)) {
+  for (const [colName, colDef] of Object.entries(schema.columns ?? {})) {
     if (!IDENTIFIER_REGEX.test(colName)) {
       throw new KVDBError(`Invalid column identifier: ${colName}`, "INVALID_SCHEMA");
     }

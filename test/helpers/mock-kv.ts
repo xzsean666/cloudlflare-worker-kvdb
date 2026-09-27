@@ -81,8 +81,16 @@ export class MockKVNamespace {
     }
 
     let expiration: number | undefined = options?.expiration;
-    if (options?.expirationTtl) {
+    if (options?.expirationTtl !== undefined) {
+      if (options.expirationTtl < 60) {
+        throw new TypeError("KV put() expirationTtl must be at least 60 seconds");
+      }
       expiration = Math.floor(Date.now() / 1000) + options.expirationTtl;
+    }
+    if (options?.expiration !== undefined) {
+      if (options.expiration < Math.floor(Date.now() / 1000) + 60) {
+        throw new TypeError("KV put() expiration must be at least 60 seconds in the future");
+      }
     }
 
     this.store.set(key, {

@@ -110,3 +110,27 @@ This document records the foundational architecture decisions for `cloudflare-wo
 - **Decision**: `@Cacheable` and `@CacheClear` support both modern TC39 Stage 3 decorators and legacy TypeScript `experimentalDecorators`.
 - **Rationale**: Guarantees plug-and-play interoperability across all modern and legacy TypeScript frameworks (e.g. NestJS, Angular, Vite, esbuild, SWC) without requiring custom compiler flag configuration.
 
+---
+
+## KD-16: Distributed Consistency, Safe R2 Lifecycle, and Edge KV Runtime Compliance
+
+- **Decision**:
+  1. **Safe Deferred R2 Blob Deletion**: In `Table.delete` and `Table.deleteMany`, the database deletion runs *first*. The R2 blob is only deleted once database deletion succeeds. If database deletion fails, the blob is preserved, eliminating corrupt dangling pointers.
+  2. **D1 Session Bookmark Propagation Parity**: All Table write operations (`set`, `setMany`, `delete`, `deleteMany`) and `D1Driver.delete/deleteMany` propagate `meta.bookmark` into the session manager, accessible via `db.getSessionBookmark()`.
+  3. **Cloudflare KV Sub-60s Compliance**: Clamps `expirationTtl` to >= 60s in `KVDriver` and `KVCacheStore` while storing exact millisecond expiration timestamps in entry metadata, complying with Cloudflare KV's runtime contract while preserving sub-minute precision.
+  4. **Orphan Blob Mark-and-Sweep**: `TTLSweeper.sweepOrphanBlobs()` cleans up unreferenced R2 blobs from overwritten records, while `cleanOrphanBlobsOnUpdate` enables eager replacement.
+  5. **Global Cache Coherence**: `TieredCache` supports `l1: false` to allow developers to bypass in-isolate memory when strict multi-isolate global consistency is needed.
+- **Rationale**: Guarantees data durability, sequential consistency across edge read replicas, and eliminates runtime crashes on Cloudflare Workers edge nodes.
+
+---
+
+## KD-17: Micro-Batch Write Buffer (AutoBatch), Lightweight Key Probing, and Keyset Pagination
+
+- **Decision**:
+  1. **Micro-Batch Write Buffer (`autoBatch`)**: `WriteBatcher<V>` automatically coalesces discrete concurrent `table.set()` calls within the same Worker isolate into atomic `setMany()` / `db.batch()` operations with configurable size (`maxBatchSize`) and time (`maxWaitMs`) debouncing. In-isolate Read-Your-Own-Writes is strictly preserved by auto-flushing pending writes before any subsequent read, delete, list, or probe operation. Background flushes are registered with `ctx.waitUntil()` to prevent premature isolate suspension.
+  2. **Index-Only `Table.has()` Probing**: Replaced full payload `get()` in schema tables with `SELECT 1 FROM table WHERE pk = ? AND (expires_at IS NULL OR expires_at > ?) LIMIT 1;`. Completely eliminates network egress to R2 for large overflow blobs and reduces SQLite I/O to a point index seek.
+  3. **Turnkey Keyset Cursor Pagination (`Table.findPage`)**: Implemented `findPage(where, queryOptions)` returning `{ items, cursor, complete }`, leveraging SQL B-Tree seek predicates `(pk > ?)` without expensive `OFFSET` table scans.
+  4. **Atomic Batch Queue Acknowledgment (`JobQueue.ackMany`)**: Added `ackMany()` to batch job completions or deletions into a single `db.batch()` call, eliminating N+1 roundtrips when draining queue job batches in workers.
+- **Rationale**: Solves Cloudflare D1 write lock contention under high-frequency writes, removes egress waste on key existence checks, and simplifies keyset pagination and queue drain performance.
+
+

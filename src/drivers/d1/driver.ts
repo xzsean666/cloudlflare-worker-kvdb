@@ -175,6 +175,9 @@ export class D1Driver implements Driver {
     try {
       const stmt = this.getDb().prepare(this.sqlBuilder.buildDeleteSql()).bind(namespace, key);
       const res = await stmt.run();
+      if ((res as any).meta?.bookmark) {
+        this.sessionManager.setBookmark((res as any).meta.bookmark);
+      }
       return (res.meta.changes ?? 0) > 0;
     } catch (err: any) {
       throw new StorageError(`D1 delete failed for key '${key}': ${err.message}`, err);
@@ -194,6 +197,10 @@ export class D1Driver implements Driver {
       });
 
       const batchResults = await this.getDb().batch(stmts);
+      const lastResult = batchResults[batchResults.length - 1];
+      if ((lastResult as any)?.meta?.bookmark) {
+        this.sessionManager.setBookmark((lastResult as any).meta.bookmark);
+      }
       let totalDeleted = 0;
       for (const res of batchResults) {
         totalDeleted += res.meta.changes ?? 0;

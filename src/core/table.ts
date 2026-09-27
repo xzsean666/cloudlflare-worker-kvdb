@@ -19,6 +19,7 @@ import { compileWhere, compileOrderBy } from "../query/compiler.js";
 import type { SortSpec, QueryOptions } from "../query/ast.js";
 import { KVDBError, StorageError } from "./errors.js";
 import { R2BlobOverflowManager } from "../drivers/r2/overflow.js";
+import { WriteBatcher, type AutoBatchConfig } from "./batcher.js";
 
 export interface SetOptions {
   keys?: Record<string, unknown>;
@@ -31,6 +32,9 @@ export interface TableOptions {
   r2Bucket?: R2Bucket;
   overflowThresholdBytes?: number;
   blobOverflow?: R2BlobOverflowManager;
+  cleanOrphanBlobsOnUpdate?: boolean;
+  autoBatch?: boolean | AutoBatchConfig;
+  ctx?: ExecutionContext;
 }
 
 export interface TableSetItem<V = unknown> {
@@ -38,6 +42,12 @@ export interface TableSetItem<V = unknown> {
   value: V;
   keys?: Record<string, unknown>;
   ttlSeconds?: number;
+}
+
+export interface PageResult<T> {
+  items: T[];
+  cursor?: string;
+  complete: boolean;
 }
 
 /**
@@ -48,6 +58,7 @@ export class Table<V = unknown> {
   private physicalTableName?: string;
   private isSchemaInitialized = false;
   private blobOverflow?: R2BlobOverflowManager;
+  private writeBatcher?: WriteBatcher<V>;
 
   constructor(
     public readonly name: string,
@@ -67,6 +78,16 @@ export class Table<V = unknown> {
         prefix: `__blobs/${this.name}`,
       });
     }
+    if (options.autoBatch) {
+      const autoBatchConfig: AutoBatchConfig = {
+        ctx: options.ctx,
+        ...(typeof options.autoBatch === "object" ? options.autoBatch : {}),
+      };
+      this.writeBatcher = new WriteBatcher<V>(
+        async (items) => this.setMany(items),
+        autoBatchConfig
+      );
+    }
   }
 
   /**
@@ -74,6 +95,22 @@ export class Table<V = unknown> {
    */
   getBlobOverflow(): R2BlobOverflowManager | undefined {
     return this.blobOverflow;
+  }
+
+  /**
+   * Immediately flushes any pending writes in the auto-batch buffer.
+   */
+  async flush(): Promise<void> {
+    if (this.writeBatcher) {
+      await this.writeBatcher.flush();
+    }
+  }
+
+  /**
+   * Returns the count of pending writes waiting in the auto-batch buffer.
+   */
+  get pendingBatchCount(): number {
+    return this.writeBatcher?.pendingCount ?? 0;
   }
 
   /**
@@ -107,10 +144,10 @@ export class Table<V = unknown> {
   }
 
   /**
-   * Deletes referenced R2 blob if the given key stores a blob descriptor.
+   * Identifies R2 blob key if the given record stores a blob descriptor.
    */
-  private async cleanupBlobIfPresent(key: string): Promise<void> {
-    if (!this.blobOverflow) return;
+  private async getBlobKeyForRecord(key: string): Promise<string | null> {
+    if (!this.blobOverflow) return null;
     try {
       let raw: string | null = null;
       if (this.normalizedSchema && this.driver instanceof D1Driver) {
@@ -132,22 +169,22 @@ export class Table<V = unknown> {
       if (raw) {
         const parsed = deserialize<unknown>(raw);
         if (isBlobDescriptor(parsed)) {
-          await this.blobOverflow.deleteBlob(parsed);
+          return parsed.r2Key;
         }
       }
     } catch {
-      // Ignore cleanup errors
+      // Ignore lookup errors
     }
+    return null;
   }
 
   /**
-   * Batch deletes referenced R2 overflow blobs for multiple keys.
+   * Identifies R2 blob keys for multiple records.
    */
-  private async cleanupBlobsIfPresent(keys: readonly string[]): Promise<void> {
-    if (!this.blobOverflow || keys.length === 0) return;
+  private async getBlobKeysForRecords(keys: readonly string[]): Promise<string[]> {
+    if (!this.blobOverflow || keys.length === 0) return [];
+    const blobKeys: string[] = [];
     try {
-      const blobKeysToDelete: string[] = [];
-
       if (this.normalizedSchema && this.driver instanceof D1Driver) {
         await this.init();
         const pkName = this.normalizedSchema.primaryKey.name;
@@ -161,7 +198,7 @@ export class Table<V = unknown> {
             try {
               const parsed = deserialize<unknown>(row.value);
               if (isBlobDescriptor(parsed)) {
-                blobKeysToDelete.push(parsed.r2Key);
+                blobKeys.push(parsed.r2Key);
               }
             } catch {}
           }
@@ -179,7 +216,7 @@ export class Table<V = unknown> {
             try {
               const parsed = deserialize<unknown>(row.value);
               if (isBlobDescriptor(parsed)) {
-                blobKeysToDelete.push(parsed.r2Key);
+                blobKeys.push(parsed.r2Key);
               }
             } catch {}
           }
@@ -191,19 +228,16 @@ export class Table<V = unknown> {
             try {
               const parsed = deserialize<unknown>(raw);
               if (isBlobDescriptor(parsed)) {
-                blobKeysToDelete.push(parsed.r2Key);
+                blobKeys.push(parsed.r2Key);
               }
             } catch {}
           }
         }
       }
-
-      if (blobKeysToDelete.length > 0) {
-        await this.blobOverflow.deleteBlobs(blobKeysToDelete);
-      }
     } catch {
-      // Ignore cleanup errors
+      // Ignore lookup errors
     }
+    return blobKeys;
   }
 
   /**
@@ -238,6 +272,9 @@ export class Table<V = unknown> {
    */
   async get(key: string): Promise<V | null> {
     validateKey(key);
+    if (this.writeBatcher && this.writeBatcher.pendingCount > 0) {
+      await this.writeBatcher.flush();
+    }
     if (this.normalizedSchema && this.driver instanceof D1Driver) {
       await this.init();
       const now = getMonotonicNow();
@@ -270,6 +307,9 @@ export class Table<V = unknown> {
    * High-performance point lookup using a secondary column / B-Tree index.
    */
   async getBy(column: string, value: unknown): Promise<V | null> {
+    if (this.writeBatcher && this.writeBatcher.pendingCount > 0) {
+      await this.writeBatcher.flush();
+    }
     if (!this.normalizedSchema || (!(this.driver instanceof D1Driver) && !(this.driver instanceof DurableObjectSqlDriver))) {
       throw new KVDBError("getBy() requires a Table with a defined physical schema on a D1 or DO-SQL driver", "UNSUPPORTED_OPERATION");
     }
@@ -300,6 +340,9 @@ export class Table<V = unknown> {
    */
   async getMany(keys: readonly string[]): Promise<(V | null)[]> {
     if (keys.length === 0) return [];
+    if (this.writeBatcher && this.writeBatcher.pendingCount > 0) {
+      await this.writeBatcher.flush();
+    }
     for (const key of keys) {
       validateKey(key);
     }
@@ -399,6 +442,20 @@ export class Table<V = unknown> {
 
     validateKey(key);
 
+    if (this.writeBatcher) {
+      return this.writeBatcher.enqueue({
+        key,
+        value: val,
+        keys: secondaryKeys,
+        ttlSeconds: ttl,
+      });
+    }
+
+    let previousBlobKey: string | null = null;
+    if (this.blobOverflow && this.options.cleanOrphanBlobsOnUpdate) {
+      previousBlobKey = await this.getBlobKeyForRecord(key);
+    }
+
     const serializedValue = await this.serializeForStorage(val, key);
 
     if (this.normalizedSchema && (this.driver instanceof D1Driver || this.driver instanceof DurableObjectSqlDriver)) {
@@ -431,14 +488,34 @@ export class Table<V = unknown> {
         ON CONFLICT(${pkName}) DO UPDATE SET ${updateSet};`;
 
       if (this.driver instanceof D1Driver) {
-        await this.driver.getDb().prepare(sql).bind(...params).run();
+        const res = await this.driver.getDb().prepare(sql).bind(...params).run();
+        if ((res as any)?.meta?.bookmark) {
+          (this.driver as D1Driver).setBookmark((res as any).meta.bookmark);
+        }
       } else {
         (this.driver as DurableObjectSqlDriver).getSql().exec(sql, ...params);
       }
-      return;
+    } else {
+      await this.driver.set(this.name, key, serializedValue, ttl);
     }
 
-    await this.driver.set(this.name, key, serializedValue, ttl);
+    // Clean up replaced R2 blob if cleanOrphanBlobsOnUpdate is enabled
+    if (previousBlobKey && this.blobOverflow) {
+      let newBlobKey: string | null = null;
+      try {
+        const parsed = deserialize<unknown>(serializedValue);
+        if (isBlobDescriptor(parsed)) {
+          newBlobKey = parsed.r2Key;
+        }
+      } catch {}
+      if (previousBlobKey !== newBlobKey) {
+        try {
+          await this.blobOverflow.deleteBlob(previousBlobKey);
+        } catch {
+          // Suppress cleanup error
+        }
+      }
+    }
   }
 
   /**
@@ -446,6 +523,9 @@ export class Table<V = unknown> {
    */
   async setMany(entries: readonly TableSetItem<V>[]): Promise<void> {
     if (entries.length === 0) return;
+    if (this.writeBatcher && this.writeBatcher.pendingCount > 0 && !this.writeBatcher.isFlushingNow) {
+      await this.writeBatcher.flush();
+    }
     if (this.normalizedSchema && this.driver instanceof D1Driver) {
       await this.init();
       const now = getMonotonicNow();
@@ -478,7 +558,11 @@ export class Table<V = unknown> {
         params.push(serializedValue, expiresAt, now, now);
         stmts.push(this.driver.getDb().prepare(sql).bind(...params));
       }
-      await this.driver.getDb().batch(stmts);
+      const batchResults = await this.driver.getDb().batch(stmts);
+      const lastResult = batchResults[batchResults.length - 1];
+      if ((lastResult as any)?.meta?.bookmark) {
+        (this.driver as D1Driver).setBookmark((lastResult as any).meta.bookmark);
+      }
       return;
     }
 
@@ -574,19 +658,20 @@ export class Table<V = unknown> {
   }
 
   /**
-   * Executes a Mongo-style filter query against physical schema tables or JSON documents.
+   * Internal find query compiler and executor.
    */
-  async find(
+  private async findInternal(
     where?: Record<string, unknown>,
     queryOptions?: QueryOptions
-  ): Promise<V[]> {
+  ): Promise<{ items: V[]; rawRows: { __pk: string; value: string }[] }> {
     if (!this.normalizedSchema || (!(this.driver instanceof D1Driver) && !(this.driver instanceof DurableObjectSqlDriver))) {
       throw new KVDBError("find() with native SQL compiler currently requires a schema table on D1 or DO-SQL", "UNSUPPORTED_OPERATION");
     }
     await this.init();
 
+    const pkName = this.normalizedSchema.primaryKey.name;
     const knownCols = new Set([
-      this.normalizedSchema.primaryKey.name,
+      pkName,
       ...Object.keys(this.normalizedSchema.columns),
     ]);
 
@@ -594,13 +679,12 @@ export class Table<V = unknown> {
     const { sql: whereSql, params } = compileWhere(ast);
     const now = getMonotonicNow();
 
-    let sql = `SELECT value FROM ${this.physicalTableName} WHERE ${whereSql} AND (expires_at IS NULL OR expires_at > ?)`;
+    let sql = `SELECT ${pkName} as __pk, value FROM ${this.physicalTableName} WHERE ${whereSql} AND (expires_at IS NULL OR expires_at > ?)`;
     params.push(now);
 
     if (queryOptions?.cursor) {
       try {
         const decoded = JSON.parse(atob(queryOptions.cursor));
-        const pkName = this.normalizedSchema.primaryKey.name;
         if (queryOptions.sort && queryOptions.sort.length > 0) {
           const firstSort = queryOptions.sort[0]!;
           const sortField = firstSort.field ?? firstSort.path?.source ?? "created_at";
@@ -613,7 +697,6 @@ export class Table<V = unknown> {
           params.push(decoded.pk ?? decoded.id ?? queryOptions.cursor);
         }
       } catch {
-        const pkName = this.normalizedSchema.primaryKey.name;
         sql += ` AND ${pkName} > ?`;
         params.push(queryOptions.cursor);
       }
@@ -625,7 +708,6 @@ export class Table<V = unknown> {
         sql += ` ORDER BY ${orderSql}`;
       }
     } else if (queryOptions?.cursor) {
-      const pkName = this.normalizedSchema.primaryKey.name;
       sql += ` ORDER BY ${pkName} ASC`;
     }
 
@@ -643,21 +725,79 @@ export class Table<V = unknown> {
       assertD1ParamLimit(params.length);
     }
 
-    let rows: { value: string }[] = [];
+    let rows: { __pk: string; value: string }[] = [];
     if (this.driver instanceof D1Driver) {
       const stmt = this.driver.getDb().prepare(sql).bind(...params);
-      rows = (await stmt.all<{ value: string }>()).results;
+      rows = (await stmt.all<{ __pk: string; value: string }>()).results;
     } else {
-      rows = (this.driver as DurableObjectSqlDriver).getSql().exec<{ value: string }>(sql, ...params).toArray();
+      rows = (this.driver as DurableObjectSqlDriver).getSql().exec<{ __pk: string; value: string }>(sql, ...params).toArray();
     }
 
-    return await Promise.all(
+    const items = await Promise.all(
       rows.map(async (r) => {
         const parsed = deserialize<unknown>(r.value);
         const resolved = await this.resolveStoredValue(parsed);
         return resolved as V;
       })
     );
+
+    return { items, rawRows: rows };
+  }
+
+  /**
+   * Executes a Mongo-style filter query against physical schema tables or JSON documents.
+   */
+  async find(
+    where?: Record<string, unknown>,
+    queryOptions?: QueryOptions
+  ): Promise<V[]> {
+    if (this.writeBatcher && this.writeBatcher.pendingCount > 0) {
+      await this.writeBatcher.flush();
+    }
+    const { items } = await this.findInternal(where, queryOptions);
+    return items;
+  }
+
+  /**
+   * Executes a paginated find query returning items, an opaque cursor for the next page, and completion status.
+   */
+  async findPage(
+    where?: Record<string, unknown>,
+    queryOptions?: QueryOptions
+  ): Promise<PageResult<V>> {
+    if (this.writeBatcher && this.writeBatcher.pendingCount > 0) {
+      await this.writeBatcher.flush();
+    }
+    const limit = Math.max(1, queryOptions?.limit ?? 50);
+    const { items, rawRows } = await this.findInternal(where, {
+      ...queryOptions,
+      limit: limit + 1,
+    });
+
+    const complete = items.length <= limit;
+    const pageItems = complete ? items : items.slice(0, limit);
+
+    let nextCursor: string | undefined = undefined;
+    if (!complete && pageItems.length > 0) {
+      const lastRow = rawRows[limit - 1]!;
+      const lastPk = lastRow.__pk;
+      const lastItem = pageItems[pageItems.length - 1] as any;
+
+      if (queryOptions?.sort && queryOptions.sort.length > 0) {
+        const firstSort = queryOptions.sort[0]!;
+        const sortField = firstSort.field ?? firstSort.path?.source ?? "created_at";
+        const lastVal = typeof lastItem === "object" && lastItem !== null ? lastItem[sortField] : undefined;
+        nextCursor = btoa(JSON.stringify({ pk: String(lastPk), val: lastVal }));
+      } else {
+        nextCursor = btoa(JSON.stringify({ pk: String(lastPk) }));
+      }
+    }
+
+    return {
+      items: pageItems,
+      cursor: nextCursor,
+      complete,
+    };
   }
 
   /**
@@ -665,22 +805,46 @@ export class Table<V = unknown> {
    */
   async delete(key: string): Promise<boolean> {
     validateKey(key);
-    await this.cleanupBlobIfPresent(key);
+    if (this.writeBatcher && this.writeBatcher.pendingCount > 0) {
+      await this.writeBatcher.flush();
+    }
+    // Identify blob key before deleting row, but do not delete blob yet to ensure atomicity
+    const blobKeyToDelete = await this.getBlobKeyForRecord(key);
+
+    let deleted = false;
+    let bookmark: string | undefined;
+
     if (this.normalizedSchema && this.driver instanceof D1Driver) {
       await this.init();
       const pkName = this.normalizedSchema.primaryKey.name;
       const sql = `DELETE FROM ${this.physicalTableName} WHERE ${pkName} = ?;`;
       const res = await this.driver.getDb().prepare(sql).bind(key).run();
-      return (res.meta.changes ?? 0) > 0;
-    }
-    if (this.normalizedSchema && this.driver instanceof DurableObjectSqlDriver) {
+      deleted = (res.meta.changes ?? 0) > 0;
+      bookmark = (res as any)?.meta?.bookmark;
+    } else if (this.normalizedSchema && this.driver instanceof DurableObjectSqlDriver) {
       await this.init();
       const pkName = this.normalizedSchema.primaryKey.name;
       const sql = `DELETE FROM ${this.physicalTableName} WHERE ${pkName} = ?;`;
       const cursor = this.driver.getSql().exec(sql, key);
-      return cursor.rowsWritten > 0;
+      deleted = cursor.rowsWritten > 0;
+    } else {
+      deleted = await this.driver.delete(this.name, key);
     }
-    return await this.driver.delete(this.name, key);
+
+    if (bookmark && this.driver instanceof D1Driver) {
+      this.driver.setBookmark(bookmark);
+    }
+
+    // Safely delete R2 blob only AFTER database record has been deleted
+    if (deleted && blobKeyToDelete && this.blobOverflow) {
+      try {
+        await this.blobOverflow.deleteBlob(blobKeyToDelete);
+      } catch {
+        // Suppress cleanup error so delete operation still succeeds
+      }
+    }
+
+    return deleted;
   }
 
   /**
@@ -688,10 +852,18 @@ export class Table<V = unknown> {
    */
   async deleteMany(keys: readonly string[]): Promise<number> {
     if (keys.length === 0) return 0;
+    if (this.writeBatcher && this.writeBatcher.pendingCount > 0) {
+      await this.writeBatcher.flush();
+    }
     for (const key of keys) {
       validateKey(key);
     }
-    await this.cleanupBlobsIfPresent(keys);
+
+    // Identify blob keys before deleting rows, but do not delete blobs yet
+    const blobKeysToDelete = await this.getBlobKeysForRecords(keys);
+
+    let totalDeleted = 0;
+    let bookmark: string | undefined;
 
     if (this.normalizedSchema && this.driver instanceof D1Driver) {
       await this.init();
@@ -704,14 +876,13 @@ export class Table<V = unknown> {
         return d1Db.prepare(sql).bind(...chunk);
       });
       const batchResults = await d1Db.batch(stmts);
-      return batchResults.reduce((acc, res) => acc + (res.meta.changes ?? 0), 0);
-    }
-
-    if (this.normalizedSchema && this.driver instanceof DurableObjectSqlDriver) {
+      totalDeleted = batchResults.reduce((acc, res) => acc + (res.meta.changes ?? 0), 0);
+      const lastRes = batchResults[batchResults.length - 1];
+      bookmark = (lastRes as any)?.meta?.bookmark;
+    } else if (this.normalizedSchema && this.driver instanceof DurableObjectSqlDriver) {
       await this.init();
       const pkName = this.normalizedSchema.primaryKey.name;
       const keyChunks = chunkArray(keys, 75);
-      let count = 0;
       const doDriver = this.driver;
       const doSql = doDriver.getSql();
       await doDriver.transaction(() => {
@@ -719,23 +890,53 @@ export class Table<V = unknown> {
           const inClause = buildInClausePlaceholders(chunk.length);
           const sql = `DELETE FROM ${this.physicalTableName} WHERE ${pkName} IN ${inClause};`;
           const cursor = doSql.exec(sql, ...chunk);
-          count += cursor.rowsWritten;
+          totalDeleted += cursor.rowsWritten;
         }
       });
-      return count;
+    } else {
+      totalDeleted = await this.driver.deleteMany(this.name, keys);
     }
 
-    return await this.driver.deleteMany(this.name, keys);
+    if (bookmark && this.driver instanceof D1Driver) {
+      this.driver.setBookmark(bookmark);
+    }
+
+    // Safely delete R2 blobs only AFTER database rows have been deleted
+    if (totalDeleted > 0 && blobKeysToDelete.length > 0 && this.blobOverflow) {
+      try {
+        await this.blobOverflow.deleteBlobs(blobKeysToDelete);
+      } catch {
+        // Suppress cleanup error
+      }
+    }
+
+    return totalDeleted;
   }
 
   /**
    * Checks whether a key exists in the table.
+   * Uses an index-only SELECT 1 query on SQL drivers to avoid reading payloads or fetching R2 blobs.
    */
   async has(key: string): Promise<boolean> {
     validateKey(key);
-    if (this.normalizedSchema && (this.driver instanceof D1Driver || this.driver instanceof DurableObjectSqlDriver)) {
-      const val = await this.get(key);
-      return val !== null;
+    if (this.writeBatcher && this.writeBatcher.pendingCount > 0) {
+      await this.writeBatcher.flush();
+    }
+    if (this.normalizedSchema && this.driver instanceof D1Driver) {
+      await this.init();
+      const now = getMonotonicNow();
+      const pkName = this.normalizedSchema.primaryKey.name;
+      const sql = `SELECT 1 FROM ${this.physicalTableName} WHERE ${pkName} = ? AND (expires_at IS NULL OR expires_at > ?) LIMIT 1;`;
+      const row = await this.driver.getDb().prepare(sql).bind(key, now).first();
+      return row !== null;
+    }
+    if (this.normalizedSchema && this.driver instanceof DurableObjectSqlDriver) {
+      await this.init();
+      const now = getMonotonicNow();
+      const pkName = this.normalizedSchema.primaryKey.name;
+      const sql = `SELECT 1 FROM ${this.physicalTableName} WHERE ${pkName} = ? AND (expires_at IS NULL OR expires_at > ?) LIMIT 1;`;
+      const rows = this.driver.getSql().exec(sql, key, now).toArray();
+      return rows.length > 0;
     }
     return await this.driver.has(this.name, key);
   }
@@ -744,6 +945,9 @@ export class Table<V = unknown> {
    * Deletes all records in this table and purges associated R2 overflow blobs.
    */
   async clear(): Promise<void> {
+    if (this.writeBatcher) {
+      this.writeBatcher.clear();
+    }
     if (this.blobOverflow) {
       try {
         await this.blobOverflow.clearBlobs();
@@ -768,6 +972,9 @@ export class Table<V = unknown> {
    * Lists keys with prefix, limit, and cursor pagination.
    */
   async list(options?: DriverListOptions): Promise<DriverListResult> {
+    if (this.writeBatcher && this.writeBatcher.pendingCount > 0) {
+      await this.writeBatcher.flush();
+    }
     if (this.normalizedSchema && (this.driver instanceof D1Driver || this.driver instanceof DurableObjectSqlDriver)) {
       await this.init();
       const now = getMonotonicNow();

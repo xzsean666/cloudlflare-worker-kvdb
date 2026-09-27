@@ -11,6 +11,7 @@ export class TTLSweeper {
   private readonly autoDiscoverTables: boolean;
   private readonly batchSize: number;
   private readonly maxBatchesPerTable: number;
+  private readonly sweepOrphans: boolean;
 
   constructor(options: SweeperOptions) {
     this.adapter = createQueueSqlAdapter(options.db);
@@ -19,6 +20,7 @@ export class TTLSweeper {
     this.autoDiscoverTables = options.autoDiscoverTables ?? true;
     this.batchSize = options.batchSize ?? 100;
     this.maxBatchesPerTable = options.maxBatchesPerTable ?? 50;
+    this.sweepOrphans = options.sweepOrphans ?? false;
   }
 
   /**
@@ -59,6 +61,64 @@ export class TTLSweeper {
   }
 
   /**
+   * Sweeps orphaned R2 overflow blobs that are no longer referenced by any active database row.
+   */
+  async sweepOrphanBlobs(options?: { prefix?: string; batchSize?: number }): Promise<number> {
+    if (!this.r2Bucket) return 0;
+    const prefix = options?.prefix ?? "__blobs";
+    const tables = await this.getTablesToSweep();
+
+    // 1. Collect all active blob keys referenced in the database tables
+    const activeBlobKeys = new Set<string>();
+    for (const table of tables) {
+      const safeTableName = `"${table.replace(/"/g, '""')}"`;
+      try {
+        const rows = await this.adapter.query<{ value: string }>(
+          `SELECT value FROM ${safeTableName} WHERE value LIKE '%"__isBlob":true%';`
+        );
+        for (const row of rows) {
+          try {
+            const parsed = deserialize<unknown>(row.value);
+            if (isBlobDescriptor(parsed)) {
+              activeBlobKeys.add(parsed.r2Key);
+            }
+          } catch {}
+        }
+      } catch {
+        // Table might not have value column or failed query
+      }
+    }
+
+    // 2. Scan R2 bucket for blobs with matching prefix and delete unreferenced orphans
+    let totalOrphansDeleted = 0;
+    let cursor: string | undefined = undefined;
+
+    do {
+      const listRes = await this.r2Bucket.list({
+        prefix,
+        cursor,
+        limit: options?.batchSize ?? 1000,
+      });
+
+      const orphanKeys: string[] = [];
+      for (const obj of listRes.objects) {
+        if (!activeBlobKeys.has(obj.key)) {
+          orphanKeys.push(obj.key);
+        }
+      }
+
+      if (orphanKeys.length > 0) {
+        await this.r2Bucket.delete(orphanKeys);
+        totalOrphansDeleted += orphanKeys.length;
+      }
+
+      cursor = listRes.truncated ? listRes.cursor : undefined;
+    } while (cursor);
+
+    return totalOrphansDeleted;
+  }
+
+  /**
    * Sweeps expired records across all configured tables, deleting associated R2 overflow blobs.
    */
   async sweepExpired(): Promise<SweepResult> {
@@ -81,11 +141,21 @@ export class TTLSweeper {
       }
     }
 
+    let totalOrphanBlobsDeleted = 0;
+    if (this.sweepOrphans && this.r2Bucket) {
+      try {
+        totalOrphanBlobsDeleted = await this.sweepOrphanBlobs();
+      } catch {
+        // Continue
+      }
+    }
+
     const durationMs = Math.round(performance.now() - startTime);
 
     return {
       expiredRowsDeleted: totalExpiredRowsDeleted,
       blobsDeleted: totalBlobsDeleted,
+      orphanedBlobsDeleted: totalOrphanBlobsDeleted,
       tablesProcessed,
       durationMs,
     };

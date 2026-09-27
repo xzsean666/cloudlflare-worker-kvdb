@@ -4,6 +4,7 @@ import { KVDriver } from "../drivers/kv/driver.js";
 import { DurableObjectSqlDriver } from "../drivers/do-sql/driver.js";
 import { HyperdriveDriver, type HyperdriveClient } from "../drivers/hyperdrive/driver.js";
 import { Table, type TableOptions } from "./table.js";
+import type { AutoBatchConfig } from "./batcher.js";
 import { KVDBError } from "./errors.js";
 
 export interface CloudflareKVDBOptions {
@@ -18,6 +19,7 @@ export interface CloudflareKVDBOptions {
   sessionBookmark?: string | null;
   tableName?: string;
   ctx?: ExecutionContext;
+  autoBatch?: boolean | AutoBatchConfig;
 }
 
 /**
@@ -75,11 +77,22 @@ export class CloudflareKVDB {
     }
     const mergedOptions: TableOptions = {
       r2Bucket: this.options.r2,
+      ctx: this.options.ctx,
+      autoBatch: this.options.autoBatch,
       ...tableOptions,
     };
     const table = new Table<V>(name, this.driver, mergedOptions);
     this.tables.set(name, table);
     return table;
+  }
+
+  /**
+   * Flushes any pending auto-batch writes across all initialized tables.
+   */
+  async flush(): Promise<void> {
+    await Promise.all(
+      Array.from(this.tables.values()).map((t) => t.flush())
+    );
   }
 
   /**
@@ -90,6 +103,13 @@ export class CloudflareKVDB {
       return this.driver.getBookmark();
     }
     return null;
+  }
+
+  /**
+   * Alias for getBookmark() to match documentation and D1 Sessions conventions.
+   */
+  getSessionBookmark(): string | null {
+    return this.getBookmark();
   }
 
   /**
@@ -115,6 +135,7 @@ export class CloudflareKVDB {
    * Shuts down drivers or flushes remaining buffers if applicable.
    */
   async close(): Promise<void> {
+    await this.flush();
     if (typeof this.driver.close === "function") {
       await this.driver.close();
     }

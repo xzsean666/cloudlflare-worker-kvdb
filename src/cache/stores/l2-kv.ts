@@ -46,11 +46,8 @@ export class KVCacheStore implements CacheStore {
     const putOptions: KVNamespacePutOptions = {};
     const effectiveTTLSec = ttlMs ? Math.ceil(ttlMs / 1000) : this.defaultTTLSeconds;
     if (effectiveTTLSec && effectiveTTLSec > 0) {
-      if (effectiveTTLSec >= 60) {
-        putOptions.expirationTtl = effectiveTTLSec;
-      } else {
-        putOptions.expiration = Math.floor(now / 1000) + effectiveTTLSec;
-      }
+      // Cloudflare Workers KV requires expirationTtl to be >= 60 seconds
+      putOptions.expirationTtl = Math.max(60, effectiveTTLSec);
     }
 
     await this.kv.put(this.storageKey(key), serialize(entry), putOptions);

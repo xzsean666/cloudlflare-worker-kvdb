@@ -33,11 +33,18 @@ export interface SweeperOptions {
    * Default: 50.
    */
   maxBatchesPerTable?: number;
+
+  /**
+   * Whether to sweep orphaned R2 overflow blobs that are no longer referenced by any active database row.
+   * Default: false.
+   */
+  sweepOrphans?: boolean;
 }
 
 export interface SweepResult {
   expiredRowsDeleted: number;
   blobsDeleted: number;
+  orphanedBlobsDeleted: number;
   tablesProcessed: string[];
   durationMs: number;
 }

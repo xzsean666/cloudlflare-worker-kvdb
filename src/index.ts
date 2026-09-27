@@ -13,6 +13,7 @@ export * from "./core/key.js";
 export * from "./core/serializer.js";
 export * from "./core/schema.js";
 export * from "./core/table.js";
+export * from "./core/batcher.js";
 export * from "./core/kvdb.js";
 
 // Storage driver exports

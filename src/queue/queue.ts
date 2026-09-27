@@ -380,6 +380,71 @@ export class JobQueue<T = unknown> {
   }
 
   /**
+   * Batch acknowledges successful completion of multiple jobs atomically.
+   */
+  async ackMany(
+    jobs: readonly (Job<T> | { id: string; lockToken?: string | null } | string)[],
+    options?: { removeOnComplete?: boolean }
+  ): Promise<number> {
+    if (jobs.length === 0) return 0;
+    await this.init();
+    const now = getMonotonicNow();
+
+    const normalized = jobs.map((j) => {
+      if (typeof j === "string") return { id: j, lockToken: undefined };
+      return { id: j.id, lockToken: j.lockToken ?? undefined };
+    });
+
+    if (typeof this.adapter.batch === "function") {
+      const stmts: QueueSqlStatement[] = [];
+      for (const item of normalized) {
+        if (options?.removeOnComplete) {
+          if (item.lockToken !== undefined) {
+            stmts.push({
+              sql: `DELETE FROM ${this.tableName} WHERE id = ? AND lock_token = ? AND state = 'active';`,
+              params: [item.id, item.lockToken],
+            });
+          } else {
+            stmts.push({
+              sql: `DELETE FROM ${this.tableName} WHERE id = ? AND state = 'active';`,
+              params: [item.id],
+            });
+          }
+        } else {
+          if (item.lockToken !== undefined) {
+            stmts.push({
+              sql: `UPDATE ${this.tableName} SET state = 'completed', lock_token = NULL, leased_until = NULL, updated_at = ? WHERE id = ? AND lock_token = ? AND state = 'active';`,
+              params: [now, item.id, item.lockToken],
+            });
+          } else {
+            stmts.push({
+              sql: `UPDATE ${this.tableName} SET state = 'completed', lock_token = NULL, leased_until = NULL, updated_at = ? WHERE id = ? AND state = 'active';`,
+              params: [now, item.id],
+            });
+          }
+        }
+      }
+
+      let totalChanges = 0;
+      const chunks = chunkArray(stmts, 50);
+      for (const chunk of chunks) {
+        const results = await this.adapter.batch(chunk);
+        for (const res of results) {
+          totalChanges += res.changes;
+        }
+      }
+      return totalChanges;
+    }
+
+    let totalChanges = 0;
+    for (const item of normalized) {
+      const success = await this.ack(item.id, item.lockToken, options);
+      if (success) totalChanges++;
+    }
+    return totalChanges;
+  }
+
+  /**
    * Negatively acknowledges a job upon failure, calculating exponential backoff or moving to DLQ.
    */
   async nack(
@@ -513,6 +578,13 @@ export class JobQueue<T = unknown> {
       ...counts,
       total,
     };
+  }
+
+  /**
+   * Alias for stats().
+   */
+  async getStats(): Promise<QueueStats> {
+    return this.stats();
   }
 
   /**
