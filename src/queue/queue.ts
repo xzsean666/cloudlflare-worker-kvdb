@@ -3,9 +3,10 @@ import { createQueueSqlAdapter, type QueueSqlAdapter, type QueueSqlStatement } f
 import { getMonotonicNow } from "../core/clock.js";
 import { serialize, deserialize } from "../core/serializer.js";
 import { chunkArray } from "../core/chunker.js";
-import { StorageError } from "../core/errors.js";
+import { StorageError, KVDBError } from "../core/errors.js";
 
 export const DEFAULT_QUEUE_TABLE = "_cf_queue";
+const IDENTIFIER_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 interface DbJobRow {
   id: string;
@@ -42,7 +43,11 @@ export class JobQueue<T = unknown> {
   constructor(config: QueueConfig) {
     this.adapter = createQueueSqlAdapter(config.db);
     this.queueName = config.queueName ?? "default";
-    this.tableName = config.tableName ?? DEFAULT_QUEUE_TABLE;
+    const tName = config.tableName ?? DEFAULT_QUEUE_TABLE;
+    if (!IDENTIFIER_REGEX.test(tName)) {
+      throw new KVDBError(`Invalid queue table name identifier "${tName}"`, "INVALID_SCHEMA");
+    }
+    this.tableName = tName;
     this.leaseSeconds = config.leaseSeconds ?? 30;
     this.defaultMaxAttempts = config.defaultMaxAttempts ?? 3;
     this.baseBackoffMs = config.baseBackoffMs ?? 1000;

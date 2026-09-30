@@ -161,12 +161,22 @@ export function encodeCursor(data: unknown): string {
  * Safe Unicode-compliant Base64 JSON cursor decoder for keyset pagination.
  */
 export function decodeCursor<T = unknown>(cursor: string): T {
-  const binary = atob(cursor);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
+  try {
+    const binary = atob(cursor);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const json = new TextDecoder().decode(bytes);
+    const parsed = JSON.parse(json, (key, value) => {
+      if (key === "__proto__" || key === "constructor" || key === "prototype") {
+        return undefined;
+      }
+      return value;
+    });
+    return parsed as T;
+  } catch (err: any) {
+    throw new SerializationError(`Failed to decode cursor: ${err.message}`, err);
   }
-  const json = new TextDecoder().decode(bytes);
-  return JSON.parse(json) as T;
 }
 

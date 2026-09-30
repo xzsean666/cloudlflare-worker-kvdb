@@ -2,7 +2,7 @@ import type { Driver, DriverListOptions, DriverListResult } from "../drivers/typ
 import { D1Driver } from "../drivers/d1/driver.js";
 import { DurableObjectSqlDriver } from "../drivers/do-sql/driver.js";
 import { serialize, deserialize, isBlobDescriptor, encodeCursor, decodeCursor } from "./serializer.js";
-import { validateKey } from "./key.js";
+import { validateKey, validateNamespace } from "./key.js";
 import { getMonotonicNow } from "./clock.js";
 import { chunkArray, buildInClausePlaceholders, assertD1ParamLimit } from "./chunker.js";
 import {
@@ -19,9 +19,9 @@ import {
   generateAddColumnSql,
   generateAddIndexSql,
 } from "./schema.js";
-import { parseWhere } from "../query/parser.js";
-import { compileWhere, compileOrderBy } from "../query/compiler.js";
-import type { SortSpec, QueryOptions } from "../query/ast.js";
+import { parseWhere, parsePath } from "../query/parser.js";
+import { compileWhere, compileOrderBy, renderFieldExpression } from "../query/compiler.js";
+import type { SortSpec, QueryOptions, FieldPath } from "../query/ast.js";
 import { KVDBError, StorageError } from "./errors.js";
 import { R2BlobOverflowManager } from "../drivers/r2/overflow.js";
 import { WriteBatcher, type AutoBatchConfig } from "./batcher.js";
@@ -84,6 +84,20 @@ export interface PageResult<T> {
   complete: boolean;
 }
 
+function extractNestedFieldValue(item: unknown, path: string): unknown {
+  if (item === null || typeof item !== "object") return undefined;
+  if (path in (item as Record<string, unknown>)) {
+    return (item as Record<string, unknown>)[path];
+  }
+  const parts = path.split(".");
+  let current: any = item;
+  for (const part of parts) {
+    if (current === null || typeof current !== "object") return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
 /**
  * Type-safe Table facade providing CRUD, batch, prefix, schema, and query operations.
  */
@@ -100,6 +114,10 @@ export class Table<V = unknown, Keys extends Record<string, unknown> = Record<st
     public readonly driver: Driver,
     public readonly options: TableOptions<Keys> = {}
   ) {
+    validateNamespace(name);
+    if (name.includes("..")) {
+      throw new KVDBError(`Table name "${name}" cannot contain path traversal segments '..'`, "INVALID_NAMESPACE");
+    }
     if (options.schema) {
       this.normalizedSchema = normalizeTableSchema(options.schema);
       this.physicalTableName = this.normalizedSchema.tableName ?? `_kvdb_t_${this.name.replace(/[^A-Za-z0-9_]/g, "_")}`;
@@ -1048,11 +1066,12 @@ export class Table<V = unknown, Keys extends Record<string, unknown> = Record<st
         const decoded = decodeCursor<any>(queryOptions.cursor);
         if (queryOptions.sort && queryOptions.sort.length > 0) {
           const firstSort = queryOptions.sort[0]!;
-          const sortField =
-            typeof firstSort.path === "string"
-              ? firstSort.path
-              : firstSort.field ?? firstSort.path?.source ?? "created_at";
-          const sortCol = knownCols.has(sortField) ? sortField : `json_extract(value, '$.${sortField}')`;
+          const rawSortPath = firstSort.path ?? firstSort.field ?? "created_at";
+          const parsedSortPath =
+            typeof rawSortPath === "string"
+              ? parsePath(rawSortPath, knownCols)
+              : (rawSortPath as FieldPath | undefined) ?? parsePath("created_at", knownCols);
+          const sortCol = renderFieldExpression(parsedSortPath, decoded?.val);
           const cmpOp = (firstSort.direction ?? firstSort.order) === "desc" ? "<" : ">";
           sql += ` AND (${sortCol} ${cmpOp} ? OR (${sortCol} = ? AND ${pkName} > ?))`;
           params.push(decoded.val, decoded.val, decoded.pk);
@@ -1247,7 +1266,7 @@ export class Table<V = unknown, Keys extends Record<string, unknown> = Record<st
           typeof firstSort.path === "string"
             ? firstSort.path
             : firstSort.field ?? firstSort.path?.source ?? "created_at";
-        const lastVal = typeof lastItem === "object" && lastItem !== null ? lastItem[sortField] : undefined;
+        const lastVal = extractNestedFieldValue(lastItem, sortField);
         nextCursor = encodeCursor({ pk: String(lastPk), val: lastVal });
       } else {
         nextCursor = encodeCursor({ pk: String(lastPk) });
@@ -1484,6 +1503,50 @@ export class Table<V = unknown, Keys extends Record<string, unknown> = Record<st
   async getByPrefix(prefix = ""): Promise<Map<string, V>> {
     const resultMap = new Map<string, V>();
     let cursor: string | undefined = undefined;
+
+    // High-performance single-query path for physical schema tables on D1 and DO-SQL
+    if (this.normalizedSchema && (this.driver instanceof D1Driver || this.driver instanceof DurableObjectSqlDriver)) {
+      await this.init();
+      const now = getMonotonicNow();
+      const pkName = this.normalizedSchema.primaryKey.name;
+      const limit = 1000;
+      const escaped = prefix.replace(/[%_\\]/g, "\\$&");
+
+      do {
+        let sql = `SELECT ${pkName} as key, value FROM ${this.physicalTableName} WHERE ${pkName} LIKE ? ESCAPE '\\' AND (expires_at IS NULL OR expires_at > ?)`;
+        const params: unknown[] = [`${escaped}%`, now];
+        if (cursor) {
+          sql += ` AND ${pkName} > ?`;
+          params.push(cursor);
+        }
+        sql += ` ORDER BY ${pkName} ASC LIMIT ?;`;
+        params.push(limit + 1);
+
+        let rows: { key: string; value: string }[] = [];
+        if (this.driver instanceof D1Driver) {
+          rows = (await this.driver.getDb().prepare(sql).bind(...params).all<{ key: string; value: string }>()).results;
+        } else {
+          rows = (this.driver as DurableObjectSqlDriver).getSql().exec<{ key: string; value: string }>(sql, ...params).toArray();
+        }
+
+        const complete = rows.length <= limit;
+        const pageRows = complete ? rows : rows.slice(0, limit);
+
+        for (const row of pageRows) {
+          try {
+            const parsed = deserialize<unknown>(row.value);
+            const val = await this.resolveStoredValue(parsed);
+            if (val !== null && val !== undefined) {
+              resultMap.set(String(row.key), val);
+            }
+          } catch {}
+        }
+
+        cursor = complete ? undefined : String(pageRows[pageRows.length - 1]!.key);
+      } while (cursor);
+
+      return resultMap;
+    }
 
     do {
       const page = await this.list({ prefix, limit: 1000, cursor });

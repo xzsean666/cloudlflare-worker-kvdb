@@ -116,6 +116,9 @@ function compileExists(path: FieldPath, value: boolean): string {
 }
 
 export function coerceSqlParam(value: unknown): unknown {
+  if (value === undefined) {
+    return null;
+  }
   if (typeof value === "boolean") {
     return value ? 1 : 0;
   }

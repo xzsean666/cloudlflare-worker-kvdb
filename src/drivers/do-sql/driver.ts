@@ -7,13 +7,14 @@ import type {
 } from "../types.js";
 import { getMonotonicNow } from "../../core/clock.js";
 import { chunkArray } from "../../core/chunker.js";
-import { StorageError } from "../../core/errors.js";
+import { StorageError, KVDBError } from "../../core/errors.js";
 
 export interface DurableObjectSqlDriverOptions {
   tableName?: string;
 }
 
 export const DEFAULT_DO_SQL_TABLE = "_cf_kvdb";
+const IDENTIFIER_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
  * Cloudflare Durable Objects SQLite Driver backed by `ctx.storage.sql`.
@@ -42,7 +43,11 @@ export class DurableObjectSqlDriver implements Driver {
     if (!sql) {
       throw new StorageError("DurableObjectSqlDriver requires a valid SqlStorage binding (ctx.storage.sql)", "INVALID_CONFIG");
     }
-    this.tableName = options.tableName ?? DEFAULT_DO_SQL_TABLE;
+    const tName = options.tableName ?? DEFAULT_DO_SQL_TABLE;
+    if (!IDENTIFIER_REGEX.test(tName)) {
+      throw new KVDBError(`Invalid table name identifier "${tName}"`, "INVALID_SCHEMA");
+    }
+    this.tableName = tName;
   }
 
   /**

@@ -7,7 +7,7 @@ import type {
 } from "../types.js";
 import { getMonotonicNow } from "../../core/clock.js";
 import { chunkArray } from "../../core/chunker.js";
-import { StorageError } from "../../core/errors.js";
+import { StorageError, KVDBError } from "../../core/errors.js";
 
 export interface HyperdriveClient {
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
@@ -37,6 +37,7 @@ export interface HyperdriveDriverOptions {
 }
 
 export const DEFAULT_HYPERDRIVE_TABLE = "_cf_kvdb";
+const IDENTIFIER_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
  * Converts SQLite-style '?' placeholders into PostgreSQL positional markers ($1, $2, ...).
@@ -70,7 +71,11 @@ export class HyperdriveDriver implements Driver {
   private isInitialized = false;
 
   constructor(options: HyperdriveDriverOptions = {}) {
-    this.tableName = options.tableName ?? DEFAULT_HYPERDRIVE_TABLE;
+    const tName = options.tableName ?? DEFAULT_HYPERDRIVE_TABLE;
+    if (!IDENTIFIER_REGEX.test(tName)) {
+      throw new KVDBError(`Invalid table name identifier "${tName}"`, "INVALID_SCHEMA");
+    }
+    this.tableName = tName;
     this.hyperdrive = options.hyperdrive;
     this.connectionString = options.connectionString ?? options.hyperdrive?.connectionString;
     this.client = options.client;

@@ -1,9 +1,15 @@
 import { buildInClausePlaceholders, buildMultiRowPlaceholders } from "../../core/chunker.js";
+import { KVDBError } from "../../core/errors.js";
 
 export const DEFAULT_KVDB_TABLE = "_kvdb_entries";
+const IDENTIFIER_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export class D1SqlBuilder {
-  constructor(public readonly tableName: string = DEFAULT_KVDB_TABLE) {}
+  constructor(public readonly tableName: string = DEFAULT_KVDB_TABLE) {
+    if (!IDENTIFIER_REGEX.test(tableName)) {
+      throw new KVDBError(`Invalid table name identifier "${tableName}"`, "INVALID_SCHEMA");
+    }
+  }
 
   buildBootstrapSql(): string[] {
     return [

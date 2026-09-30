@@ -129,21 +129,28 @@ export class TieredCache {
         return entry.value;
       }
 
-      // Entry is stale: trigger background revalidation
-      const revalidate = async () => {
-        try {
-          const freshVal = await fetcher();
-          await this.set(key, freshVal, totalLifetime);
-        } catch {
-          // Swallow background revalidation errors so consumer still receives cached value
-        }
-      };
+      // Entry is stale: trigger background revalidation with SingleFlight protection
+      if (!this.inFlight.has(key)) {
+        const revalidate = async () => {
+          try {
+            const freshVal = await fetcher();
+            await this.set(key, freshVal, totalLifetime);
+          } catch {
+            // Swallow background revalidation errors so consumer still receives cached value
+          } finally {
+            this.inFlight.delete(key);
+          }
+        };
 
-      if (this.ctx && typeof (this.ctx as any).waitUntil === "function") {
-        (this.ctx as any).waitUntil(revalidate());
-      } else {
-        // Run in background without blocking
-        void revalidate();
+        const revalidatePromise = revalidate();
+        this.inFlight.set(key, revalidatePromise);
+
+        if (this.ctx && typeof (this.ctx as any).waitUntil === "function") {
+          (this.ctx as any).waitUntil(revalidatePromise);
+        } else {
+          // Run in background without blocking
+          void revalidatePromise;
+        }
       }
 
       return entry.value;

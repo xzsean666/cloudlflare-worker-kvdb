@@ -56,16 +56,26 @@
         - Implemented 50-chunking on `db.batch()` in `setMany()` for strict D1 100-parameter safety.
         - Added automatic write queue flush before schema evolution DDL operations (`addKey()`, `addIndex()`).
 
+  - **COMPREHENSIVE SECURITY & PERFORMANCE AUDIT (DEEP HARDENING)**:
+    - **Keyset Cursor SQL Injection Prevention**: Closed SQL injection vulnerability in `Table.findInternal` keyset seek by properly routing `firstSort` paths through `parsePath(rawSortPath, knownCols)` and `renderFieldExpression()`.
+    - **Driver Table Identifier Whitelisting**: Added strict identifier validation (`IDENTIFIER_REGEX`) across all drivers (`D1SqlBuilder`, `DurableObjectSqlDriver`, `HyperdriveDriver`, and `JobQueue`), preventing SQL injection from arbitrary table name inputs.
+    - **Table Namespace & Path Traversal Guard**: Enforced `validateNamespace(name)` and path traversal segment `..` prohibition in `Table` constructor, protecting R2 bucket tenant isolation prefixes (`__blobs/${name}`).
+    - **decodeCursor Resiliency & Prototype Pollution Guard**: Wrapped `decodeCursor` in try/catch throwing typed `SerializationError`, and stripped `__proto__`, `constructor`, and `prototype` keys during cursor JSON parsing.
+    - **Coerce undefined to null**: Coerced `undefined` query and queue parameters to `null` to eliminate Cloudflare D1 / workerd `D1_TYPE_ERROR` parameter exceptions.
+    - **SWR Background SingleFlight Protection**: Extended `inFlight` deduplication to background revalidation in `TieredCache.wrap()`, completely eliminating thundering herd / cache stampede on stale reads under high concurrency.
+    - **Nested Keyset Pagination**: Added `extractNestedFieldValue` helper to `Table.findPage` to correctly resolve nested dot paths (e.g. `meta.priority`) for cursor encoding.
+    - **Direct getByPrefix Query on Schema Tables**: Optimized `Table.getByPrefix()` for schema tables on D1 and DO-SQL to retrieve keys and values in a single SELECT query per page, cutting database roundtrips by 50%.
+
 ---
 
 ## 2. Verification Commands Run & Results
 ```bash
 pnpm test
-# 29 test files, 224/224 tests passed in 3.33s
+# 30 test files, 232/232 tests passed in 3.36s
 
 pnpm test:coverage
-# Statements: 89.78%, Functions: 96.90%, Branches: 79.17%, Lines: 89.78%
-# 29 test files, 224/224 tests passed in 3.92s
+# Statements: 90.02%, Functions: 97.26%, Branches: 79.60%, Lines: 90.02%
+# 30 test files, 232/232 tests passed in 3.91s
 
 pnpm typecheck
 # 0 errors (strict TypeScript)
@@ -74,13 +84,13 @@ pnpm exec tsc --project examples/tsconfig.json --noEmit
 # 0 errors across all examples
 
 pnpm build
-# Dual ESM (dist/index.js, 157.02 KB) + CJS (dist/index.cjs, 161.23 KB) + DTS (dist/index.d.ts, 52.76 KB)
+# Dual ESM (dist/index.js, 160.55 KB) + CJS (dist/index.cjs, 164.75 KB) + DTS (dist/index.d.ts, 52.76 KB)
 ```
 
 ---
 
 ## 3. Unresolved Issues & Known Gaps
-- None. All audit findings, Unicode base64 cursor serialization, keyset tie-breaking, numeric primary keys, flexible record batching, decorator modes, and example applications fully resolved and verified with 224 automated tests.
+- None. All audit vulnerabilities and performance bottlenecks fully identified, defensively patched, and regression tested with 232 automated tests.
 
 ---
 
