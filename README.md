@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Runtime](https://img.shields.io/badge/Runtime-Cloudflare%20workerd-orange.svg)](#)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Strict-blue.svg)](#)
-[![Tests](https://img.shields.io/badge/Tests-164%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/Tests-220%20passing-brightgreen.svg)](#)
 [![Bundle](https://img.shields.io/badge/Bundle-ESM%20%2B%20CJS%20%2B%20DTS-purple.svg)](#)
 
 ---
@@ -56,9 +56,24 @@ Building production-grade data storage on Cloudflare primitives (D1, Workers KV,
 ## 📦 Installation
 
 ```bash
-pnpm add cloudflare-worker-kvdb
-# or
-npm install cloudflare-worker-kvdb
+# 1. 跟踪 main 最新分支 (Latest from main branch)
+pnpm add github:xzsean666/cloudlflare-worker-kvdb#main
+
+# 2. 锁定特定 Commit Hash (推荐生产环境，确保不可变一致构建)
+pnpm add github:xzsean666/cloudlflare-worker-kvdb#<commit-hash>
+# 例如: pnpm add github:xzsean666/cloudlflare-worker-kvdb#aeb845a
+
+# npm 替代命令:
+# npm install github:xzsean666/cloudlflare-worker-kvdb#main
+```
+
+或者直接在 `package.json` 中声明：
+```json
+{
+  "dependencies": {
+    "cloudflare-worker-kvdb": "github:xzsean666/cloudlflare-worker-kvdb#main"
+  }
+}
 ```
 
 ---
@@ -174,7 +189,7 @@ const topPlayers = await users.find(
   },
   {
     limit: 10,
-    sort: [{ field: "score", order: "desc" }],
+    sort: [{ field: "score", direction: "desc" }],
   }
 );
 

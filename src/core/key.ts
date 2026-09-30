@@ -2,12 +2,20 @@ import { KVDBError } from "./errors.js";
 
 export const DEFAULT_KEY_DELIMITER = ":";
 
+export type StorageKey = string | number;
+
 /**
- * Validates a key string.
+ * Validates a key string or number.
  */
-export function validateKey(key: string): void {
+export function validateKey(key: string | number): void {
+  if (typeof key === "number") {
+    if (!Number.isFinite(key)) {
+      throw new KVDBError("Numeric key must be a finite number", "INVALID_KEY");
+    }
+    return;
+  }
   if (typeof key !== "string" || key.trim().length === 0) {
-    throw new KVDBError("Key must be a non-empty string", "INVALID_KEY");
+    throw new KVDBError("Key must be a non-empty string or a finite number", "INVALID_KEY");
   }
 }
 
@@ -34,12 +42,12 @@ export function validateNamespace(
  */
 export function encodeKey(
   namespace: string,
-  key: string,
+  key: string | number,
   delimiter: string = DEFAULT_KEY_DELIMITER
 ): string {
   validateNamespace(namespace, delimiter);
   validateKey(key);
-  return `${namespace}${delimiter}${key}`;
+  return `${namespace}${delimiter}${String(key)}`;
 }
 
 /**

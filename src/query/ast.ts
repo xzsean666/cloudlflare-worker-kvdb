@@ -41,8 +41,9 @@ export type QueryNode =
 /** Sort direction for a single field */
 export interface SortSpec {
   field?: string;
-  path?: FieldPath;
-  direction: "asc" | "desc";
+  path?: string | FieldPath;
+  direction?: "asc" | "desc";
+  order?: "asc" | "desc";
 }
 
 /** Options accompanying a query */

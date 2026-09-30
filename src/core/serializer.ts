@@ -143,3 +143,30 @@ export function deserialize<T = unknown>(text: string): T {
     throw new SerializationError(`Failed to deserialize JSON string: ${err.message}`, err);
   }
 }
+
+/**
+ * Safe Unicode-compliant Base64 JSON cursor encoder for keyset pagination.
+ */
+export function encodeCursor(data: unknown): string {
+  const json = JSON.stringify(data);
+  const bytes = new TextEncoder().encode(json);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]!);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Safe Unicode-compliant Base64 JSON cursor decoder for keyset pagination.
+ */
+export function decodeCursor<T = unknown>(cursor: string): T {
+  const binary = atob(cursor);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  const json = new TextDecoder().decode(bytes);
+  return JSON.parse(json) as T;
+}
+

@@ -20,18 +20,50 @@ export interface PrimaryKeyDefinition<T extends PrimaryKeyType = PrimaryKeyType>
   type?: T;
 }
 
-export interface TableIndexDefinition {
+export interface MultiKeyIndexDefinition {
   name?: string;
-  columns: string[];
+  keys?: string[];
+  columns?: string[];
   unique?: boolean;
 }
 
-export interface TableSchema {
-  primaryKey?: PrimaryKeyDefinition;
-  columns?: Record<string, KeyDefinition>;
-  indexes?: TableIndexDefinition[];
+export interface TableIndexDefinition {
+  name?: string;
+  columns?: string[];
+  keys?: string[];
+  unique?: boolean;
+}
+
+export interface MultiKeySchema<
+  Keys extends Record<string, unknown> = Record<string, unknown>,
+  PKType extends PrimaryKeyType = PrimaryKeyType
+> {
+  primaryKey?: PrimaryKeyDefinition<PKType>;
+  keys?: { [Name in keyof Keys]?: KeyDefinition } & Record<string, KeyDefinition>;
+  columns?: { [Name in keyof Keys]?: KeyDefinition } & Record<string, KeyDefinition>;
+  indexes?: (TableIndexDefinition | MultiKeyIndexDefinition)[];
   tableName?: string;
   version?: number;
+}
+
+export interface TableSchema<Columns extends Record<string, unknown> = Record<string, unknown>> {
+  primaryKey?: PrimaryKeyDefinition;
+  columns?: { [Name in keyof Columns]?: KeyDefinition } & Record<string, KeyDefinition>;
+  keys?: { [Name in keyof Columns]?: KeyDefinition } & Record<string, KeyDefinition>;
+  indexes?: (TableIndexDefinition | MultiKeyIndexDefinition)[];
+  tableName?: string;
+  version?: number;
+}
+
+export interface PhysicalRecord<
+  Columns extends Record<string, unknown> = Record<string, unknown>,
+  Value = unknown,
+  PK = string | number
+> {
+  key: PK;
+  columns: Partial<Columns>;
+  keys: Partial<Columns>;
+  value: Value;
 }
 
 export interface NormalizedSchema {
@@ -46,9 +78,9 @@ const IDENTIFIER_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const RESERVED_WORDS = new Set(["value", "expires_at", "created_at", "updated_at", "namespace", "key"]);
 
 /**
- * Normalizes and validates a TableSchema.
+ * Normalizes and validates a TableSchema or MultiKeySchema.
  */
-export function normalizeTableSchema(schema: TableSchema): NormalizedSchema {
+export function normalizeTableSchema(schema: TableSchema | MultiKeySchema): NormalizedSchema {
   const pk: Required<PrimaryKeyDefinition> = {
     name: schema.primaryKey?.name ?? "id",
     type: schema.primaryKey?.type ?? "string",
@@ -62,8 +94,9 @@ export function normalizeTableSchema(schema: TableSchema): NormalizedSchema {
     throw new KVDBError(`Invalid table name identifier: ${schema.tableName}`, "INVALID_SCHEMA");
   }
 
+  const rawColumns = schema.keys ?? schema.columns ?? {};
   const columns: Record<string, KeyDefinition> = {};
-  for (const [colName, colDef] of Object.entries(schema.columns ?? {})) {
+  for (const [colName, colDef] of Object.entries(rawColumns)) {
     if (!IDENTIFIER_REGEX.test(colName)) {
       throw new KVDBError(`Invalid column identifier: ${colName}`, "INVALID_SCHEMA");
     }
@@ -82,12 +115,18 @@ export function normalizeTableSchema(schema: TableSchema): NormalizedSchema {
       if (idx.name && !IDENTIFIER_REGEX.test(idx.name)) {
         throw new KVDBError(`Invalid index identifier: ${idx.name}`, "INVALID_SCHEMA");
       }
-      for (const col of idx.columns) {
+      const cols = idx.keys ?? idx.columns ?? [];
+      for (const col of cols) {
         if (!IDENTIFIER_REGEX.test(col)) {
           throw new KVDBError(`Invalid index column identifier: ${col}`, "INVALID_SCHEMA");
         }
       }
-      indexes.push({ ...idx });
+      indexes.push({
+        name: idx.name,
+        columns: [...cols],
+        keys: [...cols],
+        unique: idx.unique,
+      });
     }
   }
 
@@ -102,6 +141,7 @@ export function normalizeTableSchema(schema: TableSchema): NormalizedSchema {
       indexes.push({
         name: idxName,
         columns: [colName],
+        keys: [colName],
         unique: isUnique,
       });
     }
@@ -186,11 +226,12 @@ export function generateIndexSqls(
   sqls.push(`CREATE INDEX IF NOT EXISTS idx_${tableName}_created ON ${tableName} (created_at);`);
 
   for (const idx of schema.indexes) {
-    const colList = idx.columns.join("_");
+    const cols = idx.columns ?? idx.keys ?? [];
+    const colList = cols.join("_");
     const idxName = idx.name ?? `idx_${tableName}_${colList}`;
     const unique = idx.unique ? "UNIQUE " : "";
     sqls.push(
-      `CREATE ${unique}INDEX IF NOT EXISTS ${idxName} ON ${tableName} (${idx.columns.join(", ")});`
+      `CREATE ${unique}INDEX IF NOT EXISTS ${idxName} ON ${tableName} (${cols.join(", ")});`
     );
   }
 
@@ -226,4 +267,29 @@ export function generateAddColumnSql(
   }
 
   return { alterSql, indexSql };
+}
+
+/**
+ * Generates SQL DDL to dynamically create an index on an existing table.
+ */
+export function generateAddIndexSql(
+  tableName: string,
+  indexDef: TableIndexDefinition | MultiKeyIndexDefinition
+): string {
+  const cols = indexDef.keys ?? indexDef.columns ?? [];
+  if (cols.length === 0) {
+    throw new KVDBError("Index definition must contain at least one column/key", "INVALID_INDEX");
+  }
+  for (const col of cols) {
+    if (!IDENTIFIER_REGEX.test(col)) {
+      throw new KVDBError(`Invalid index column identifier: ${col}`, "INVALID_SCHEMA");
+    }
+  }
+  const colList = cols.join("_");
+  const idxName = indexDef.name ?? `idx_${tableName}_${colList}`;
+  if (!IDENTIFIER_REGEX.test(idxName)) {
+    throw new KVDBError(`Invalid index identifier: ${idxName}`, "INVALID_SCHEMA");
+  }
+  const unique = indexDef.unique ? "UNIQUE " : "";
+  return `CREATE ${unique}INDEX IF NOT EXISTS ${idxName} ON ${tableName} (${cols.join(", ")});`;
 }

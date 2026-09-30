@@ -70,18 +70,21 @@ export class CloudflareKVDB {
   /**
    * Returns a typed Table facade for a given namespace.
    */
-  table<V = unknown>(name: string, tableOptions?: TableOptions): Table<V> {
+  table<V = unknown, Keys extends Record<string, unknown> = Record<string, unknown>>(
+    name: string,
+    tableOptions?: TableOptions<Keys>
+  ): Table<V, Keys> {
     const existing = this.tables.get(name);
     if (existing) {
-      return existing as Table<V>;
+      return existing as Table<V, Keys>;
     }
-    const mergedOptions: TableOptions = {
+    const mergedOptions: TableOptions<Keys> = {
       r2Bucket: this.options.r2,
       ctx: this.options.ctx,
       autoBatch: this.options.autoBatch,
       ...tableOptions,
     };
-    const table = new Table<V>(name, this.driver, mergedOptions);
+    const table = new Table<V, Keys>(name, this.driver, mergedOptions);
     this.tables.set(name, table);
     return table;
   }
@@ -142,3 +145,6 @@ export class CloudflareKVDB {
     this.tables.clear();
   }
 }
+
+export const KVDB = CloudflareKVDB;
+export type KVDB = CloudflareKVDB;

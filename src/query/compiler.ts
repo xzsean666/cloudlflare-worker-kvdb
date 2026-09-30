@@ -60,12 +60,16 @@ export function compileOrderBy(sort: readonly SortSpec[], knownColumns?: Set<str
   if (sort.length === 0) return "";
   return sort
     .map((spec) => {
-      const path = spec.path ?? (spec.field ? parsePath(spec.field, knownColumns) : undefined);
+      const rawPath = spec.path ?? spec.field;
+      const path =
+        typeof rawPath === "string"
+          ? parsePath(rawPath, knownColumns)
+          : (rawPath as FieldPath | undefined);
       if (!path) {
         throw new KVDBError("Sort specification must provide either 'path' or 'field'", "INVALID_QUERY_SORT");
       }
       const expr = renderFieldExpression(path);
-      const dir = spec.direction === "desc" ? "DESC" : "ASC";
+      const dir = (spec.direction ?? spec.order) === "desc" ? "DESC" : "ASC";
       return `${expr} ${dir}`;
     })
     .join(", ");

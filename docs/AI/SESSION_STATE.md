@@ -43,28 +43,44 @@
     - **Index-Only `Table.has()` Probing**: Replaced full payload `get()` in schema tables with `SELECT 1 FROM table WHERE pk = ? AND (expires_at IS NULL OR expires_at > ?) LIMIT 1;`. Completely eliminates network egress to R2 for large overflow blobs and reduces SQLite I/O to a point index seek.
     - **Turnkey Keyset Cursor Pagination (`Table.findPage`)**: Implemented `findPage(where, queryOptions)` returning `{ items, cursor, complete }`, leveraging SQL B-Tree seek predicates `(pk > ?)` without expensive `OFFSET` table scans.
     - **Atomic Batch Queue Acknowledgment (`JobQueue.ackMany`)**: Added `ackMany()` to batch job completions or deletions into a single `db.batch()` call, eliminating N+1 roundtrips when draining queue job batches in workers.
+    - **Dynamic Multi-Keys & Write Queue SQL Aggregation Optimizations (16-dynamic-multi-keys.ts Parity)**:
+      - **Dynamic Multi-Key Schema (`MultiKeySchema`)**: Added `MultiKeySchema<Keys, PKType>`, `MultiKeyIndexDefinition`, `TableIndexDefinition`, and `PhysicalRecord<Keys, V>`.
+      - **Integer & Custom Primary Keys**: Extended `validateKey`, `encodeKey`, and driver interfaces to natively support `string | number` primary keys (validating finite integers).
+      - **Full Physical Record Lookups (`getRecord`, `findRecords`)**: Added `getRecord(key)` and `findRecords(query)` returning `{ key, columns, keys, value }`.
+      - **High-Performance Secondary Key Point Lookups (`getBy`)**: Updated `getBy(column, value)` to return `(PhysicalRecord<Keys, V> & V) | null` with non-enumerable metadata properties, preserving 100% backward compatibility for direct value property assertions while supporting `byHash.columns` and `byHash.key`.
+      - **Dynamic Composite Index Creation (`addIndex`)**: Added `Table.addIndex()` supporting composite B-Tree indexes on declared keys dynamically (`CREATE INDEX IF NOT EXISTS ...`).
+      - **Flexible Query AST & Order By (`find`, `compileOrderBy`)**: Supported single-object query `{ where, sort, limit, offset, cursor }` and string sort paths (`sort: [{ path: "gasUsed", direction: "desc" }]`).
+      - **KVDB SDK Export Alias**: Exported `KVDB` class alias pointing to `CloudflareKVDB`.
+      - **Write Queue SQL Aggregation & Coalescing**:
+        - Extended `WriteBatcher` for `string | number` keys with secondary key coalescing across batch buffering intervals.
+        - Implemented 50-chunking on `db.batch()` in `setMany()` for strict D1 100-parameter safety.
+        - Added automatic write queue flush before schema evolution DDL operations (`addKey()`, `addIndex()`).
 
 ---
 
 ## 2. Verification Commands Run & Results
 ```bash
 pnpm test
-# 21 test files, 164/164 tests passed in 3.21s
+# 29 test files, 224/224 tests passed in 3.33s
+
+pnpm test:coverage
+# Statements: 89.78%, Functions: 96.90%, Branches: 79.17%, Lines: 89.78%
+# 29 test files, 224/224 tests passed in 3.92s
 
 pnpm typecheck
 # 0 errors (strict TypeScript)
 
 pnpm exec tsc --project examples/tsconfig.json --noEmit
-# 0 errors across all 3 production examples
+# 0 errors across all examples
 
 pnpm build
-# Dual ESM (dist/index.js, 139 KB) + CJS (dist/index.cjs, 143 KB) + DTS (dist/index.d.ts, 47 KB)
+# Dual ESM (dist/index.js, 157.02 KB) + CJS (dist/index.cjs, 161.23 KB) + DTS (dist/index.d.ts, 52.76 KB)
 ```
 
 ---
 
 ## 3. Unresolved Issues & Known Gaps
-- None. All audit findings and optimization goals resolved and verified with 164 automated tests.
+- None. All audit findings, Unicode base64 cursor serialization, keyset tie-breaking, numeric primary keys, flexible record batching, decorator modes, and example applications fully resolved and verified with 224 automated tests.
 
 ---
 
