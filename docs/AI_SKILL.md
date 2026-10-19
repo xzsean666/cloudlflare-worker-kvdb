@@ -1,7 +1,8 @@
 # AI Integration Skill & Agent Guidelines
 
 > **Target Audience**: AI Coding Assistants, LLMs, and System Prompt Integrations  
-> **Canonical Skill Path**: [`docs/skills/cloudflare-worker-kvdb/SKILL.md`](skills/cloudflare-worker-kvdb/SKILL.md)
+> **Canonical SDK Skill Path**: [`docs/AI/SKILL.md`](AI/SKILL.md) (Standard per INTERNAL_SDK_GUIDE.md)  
+> **Antigravity Built-in Skill Path**: [`docs/skills/cloudflare-worker-kvdb/SKILL.md`](skills/cloudflare-worker-kvdb/SKILL.md)
 
 This document provides a concise, high-density reference enabling AI agents to correctly and safely generate code using the `cloudflare-worker-kvdb` SDK.
 
@@ -168,6 +169,7 @@ if (!page1.complete && page1.cursor) {
 ---
 
 For the full detailed documentation, refer to:
-- [`docs/skills/cloudflare-worker-kvdb/SKILL.md`](skills/cloudflare-worker-kvdb/SKILL.md) — Canonical AI skill file with YAML frontmatter.
+- [`docs/AI/SKILL.md`](AI/SKILL.md) — Standard SDK AI skill & integration guide per INTERNAL_SDK_GUIDE.md.
+- [`docs/skills/cloudflare-worker-kvdb/SKILL.md`](skills/cloudflare-worker-kvdb/SKILL.md) — Antigravity built-in AI skill file.
 - [`docs/API_REFERENCE.md`](API_REFERENCE.md) — Comprehensive API reference.
 - [`docs/AI/ARCHITECTURE.md`](AI/ARCHITECTURE.md) — Deep architectural specification.

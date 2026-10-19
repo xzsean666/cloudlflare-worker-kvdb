@@ -296,10 +296,10 @@ Complete, working reference implementations are available in the [`examples/`](.
 
 ---
 
-## 📚 Complete API Documentation
+## 📚 Complete API Documentation & Guides
 
-For full details on every method, type, option, and class, refer to:
-👉 **[`docs/API_REFERENCE.md`](./docs/API_REFERENCE.md)**
+- 👉 **[`docs/API_REFERENCE.md`](./docs/API_REFERENCE.md)** — Full details on every method, type, option, and class.
+- 👉 **[`docs/AUTO_BATCH.md`](./docs/AUTO_BATCH.md)** — In-depth technical architecture on Auto-Batching, In-Memory Coalescing, and Reliability.
 
 ---
 

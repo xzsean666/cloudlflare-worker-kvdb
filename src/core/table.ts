@@ -1052,6 +1052,9 @@ export class Table<V = unknown, Keys extends Record<string, unknown> = Record<st
     const knownCols = new Set([
       pkName,
       ...Object.keys(this.normalizedSchema.columns),
+      "created_at",
+      "updated_at",
+      "expires_at",
     ]);
 
     const ast = parseWhere(where, knownCols);
@@ -1266,7 +1269,8 @@ export class Table<V = unknown, Keys extends Record<string, unknown> = Record<st
           typeof firstSort.path === "string"
             ? firstSort.path
             : firstSort.field ?? firstSort.path?.source ?? "created_at";
-        const lastVal = extractNestedFieldValue(lastItem, sortField);
+        const rawVal = lastRow && sortField in lastRow ? (lastRow as any)[sortField] : undefined;
+        const lastVal = rawVal !== undefined ? rawVal : extractNestedFieldValue(lastItem, sortField);
         nextCursor = encodeCursor({ pk: String(lastPk), val: lastVal });
       } else {
         nextCursor = encodeCursor({ pk: String(lastPk) });
